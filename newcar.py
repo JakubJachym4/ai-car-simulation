@@ -6,7 +6,6 @@ import random
 import sys
 import os
 
-import neat
 import pygame
 
 # Constants
@@ -157,7 +156,7 @@ class Car:
 def run_simulation(genomes, config):
     
     # Empty Collections For Nets and Cars
-    nets = []
+    dnas = []
     cars = []
 
     # Initialize PyGame And The Display
@@ -165,11 +164,7 @@ def run_simulation(genomes, config):
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
 
     # For All Genomes Passed Create A New Neural Network
-    for i, g in genomes:
-        net = neat.nn.FeedForwardNetwork.create(g, config)
-        nets.append(net)
-        g.fitness = 0
-
+    for i, in dnas:
         cars.append(Car())
 
     # Clock Settings
