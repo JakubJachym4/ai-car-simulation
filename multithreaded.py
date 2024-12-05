@@ -1,6 +1,7 @@
 ﻿import math
 import threading
 import queue
+from os import write
 from time import sleep
 import pygame
 import numpy as np
@@ -13,10 +14,12 @@ HEIGHT = 1080
 CAR_SIZE_X = 60
 CAR_SIZE_Y = 60
 BORDER_COLOR = (255, 255, 255, 255)
+INSTRUCTION_COUNT = 40
 
-best_car_lock = threading.Lock()
+check_if_best_car_lock = threading.Lock()
 best_fitness = -float('inf')
 best_car_steps = []
+best_car_counter = 0
 
 class Car:
 
@@ -158,13 +161,17 @@ def eval_car_thread(individual, game_map, screen, clock, result_queue):
     steps = []
 
     counter = 0
-    while car.is_alive() and counter < (30 * 40) * 10:
-        choice = individual[counter % 100]
-        car.speed = 20
+    while car.is_alive() and counter < INSTRUCTION_COUNT * 2:
+
+        choice = individual[counter % INSTRUCTION_COUNT]
+        if counter > 0 and counter % INSTRUCTION_COUNT == 0:
+            print("overflow of instructions")
+
+        car.speed = 100
         if choice == 0:
-            car.angle += 10  # Turn left
+            car.angle += 15  # Turn left
         elif choice == 1:
-            car.angle -= 10  # Turn right
+            car.angle -= 15  # Turn right
 
         if car.is_alive():
             car.update(game_map)
@@ -172,11 +179,12 @@ def eval_car_thread(individual, game_map, screen, clock, result_queue):
             steps.append((car.position[:], car.angle))
         counter += 1
 
-    with best_car_lock:
-        global best_fitness, best_car_steps
+    with check_if_best_car_lock:
+        global best_fitness, best_car_steps, best_car_counter
         if fitness > best_fitness:
             best_fitness = fitness
             best_car_steps = steps
+            best_car_counter = counter
 
     result_queue.put((fitness, steps))
 
@@ -205,11 +213,11 @@ def draw_best_car(screen, game_map, clock):
         car.rotated_sprite = car.rotate_center(car.sprite, car.angle)
         car.draw(screen)
         pygame.display.flip()
-        clock.tick(3000)
+        clock.tick(300)
 
 def run_simulation():
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
     game_map = pygame.image.load('map.png').convert()
     clock = pygame.time.Clock()
 
@@ -218,16 +226,20 @@ def run_simulation():
     creator.create("Individual", list, fitness=creator.FitnessMax)
 
     toolbox = base.Toolbox()
-    toolbox.register("attr_int", random.randint, 0, 1)
-    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_int, n=100)
+
+    # 0 - turn left, 1 - turn right - 2 - do nothing
+    toolbox.register("attr_int", random.randint, 0, 2)
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_int, n=INSTRUCTION_COUNT)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
     toolbox.register("mate", tools.cxOnePoint)
-    toolbox.register("mutate", tools.mutFlipBit, indpb=0.2)
-    toolbox.register("select", tools.selTournament, tournsize=2)
+    toolbox.register("mutate", tools.mutUniformInt, low=0, up=2, indpb=0.05)
+    toolbox.register("select", tools.selTournament, tournsize=6)
 
-    population = toolbox.population(n=200)
+    population = toolbox.population(n=250)
+    stagnation_count = 0
+    best_fitness = None
 
-    for gen in range(1000):
+    for gen in range(400):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
@@ -236,8 +248,18 @@ def run_simulation():
         for ind, (fitness, _) in zip(population, results):
             ind.fitness.values = (fitness,)
 
-        elites = tools.selBest(population, 2)
-        offspring = toolbox.select(population, len(population) - len(elites))
+        current_best = max(ind.fitness.values[0] for ind in population)
+
+        if best_fitness is None or current_best > best_fitness:
+            best_fitness = current_best
+            stagnation_count = 0
+        else:
+            stagnation_count += 1
+
+
+        mutation_probability = 0.6 if stagnation_count < 8 else 0.8
+
+        offspring = toolbox.select(population, len(population))
         offspring = list(map(toolbox.clone, offspring))
 
         for child1, child2 in zip(offspring[::2], offspring[1::2]):
@@ -247,14 +269,14 @@ def run_simulation():
                 del child2.fitness.values
 
         for mutant in offspring:
-            if random.random() < 0.4:
+            if random.random() < mutation_probability:
                 toolbox.mutate(mutant)
                 del mutant.fitness.values
 
-        population[:] = offspring + elites
+        population[:] = offspring
 
-        print(f"Generation {gen}, best fitness: {best_fitness}")
         draw_best_car(screen, game_map, clock)
+        print(f"Generation {gen}, instructions: {best_car_counter}, best fitness: {best_fitness}")
 
     # After all generations, draw the best car
 
