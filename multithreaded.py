@@ -1,29 +1,22 @@
-import math
-import queue
-import random
-import sys
-import os
+﻿import math
 import threading
-from itertools import count
-from random import choice
+import queue
 from time import sleep
-
-from deap import base, creator, tools, algorithms
 import pygame
 import numpy as np
+import random
+from deap import base, creator, tools
 
 # Constants
 WIDTH = 1920
 HEIGHT = 1080
-
 CAR_SIZE_X = 60
 CAR_SIZE_Y = 60
+BORDER_COLOR = (255, 255, 255, 255)
 
-BORDER_COLOR = (255, 255, 255, 255)  # Color to crash on hit
-
-# Car class remains unchanged
-pause_event = threading.Event()  # Used to pause/resume the loop
-eval_queue = queue.Queue()
+best_car_lock = threading.Lock()
+best_fitness = -float('inf')
+best_car_steps = []
 
 class Car:
 
@@ -159,110 +152,112 @@ class Car:
         rotated_image = rotated_image.subsurface(rotated_rectangle).copy()
         return rotated_image
 
-
-def eval_car(individual, game_map, screen, clock):
-    """Evaluate a single individual."""
-    # Decode weights into a simple neural network structure
-    #weights = np.array(individual).reshape((5, 3))  # 5 inputs, 3 outputs
+def eval_car_thread(individual, game_map, screen, clock, result_queue):
     car = Car()
-
-    def activate(inputs):
-        """Simple forward pass through weights."""
-        return np.dot(inputs, weights)
+    fitness = 0
+    steps = []
 
     counter = 0
-    fitness = 0
-    while car.is_alive() and counter < (30 * 40) * 2:  # Roughly 20 seconds | /1.5 jest moje xd
-        #inputs = car.get_data()
-        #outputs = activate(inputs)
-        #choice = np.argmax(outputs)  # Choose the action with the highest value
-        choice = individual[counter % 200]
-        car.speed = 5
+    while car.is_alive() and counter < (30 * 40) * 10:
+        choice = individual[counter % 100]
+        car.speed = 20
         if choice == 0:
             car.angle += 10  # Turn left
         elif choice == 1:
             car.angle -= 10  # Turn right
-        # elif choice == 2 and car.speed >= 4:
-        #     car.speed -= 2  # Slow down
-        # elif choice == 3 and car.speed <= 12:
-        #     car.speed += 2  # Speed up
 
         if car.is_alive():
             car.update(game_map)
             fitness += car.get_reward()
+            steps.append((car.position[:], car.angle))
         counter += 1
+
+    with best_car_lock:
+        global best_fitness, best_car_steps
+        if fitness > best_fitness:
+            best_fitness = fitness
+            best_car_steps = steps
+
+    result_queue.put((fitness, steps))
+
+def threaded_evaluation(individuals, game_map, screen, clock):
+    threads = []
+    result_queue = queue.Queue()
+    for individual in individuals:
+        thread = threading.Thread(target=eval_car_thread, args=(individual, game_map, screen, clock, result_queue))
+        thread.start()
+        threads.append(thread)
+
+    for thread in threads:
+        thread.join()
+
+    results = []
+    while not result_queue.empty():
+        results.append(result_queue.get())
+    return results
+
+def draw_best_car(screen, game_map, clock):
+    car = Car()
+    for position, angle in best_car_steps:
         screen.blit(game_map, (0, 0))
+        car.position = position
+        car.angle = angle
+        car.rotated_sprite = car.rotate_center(car.sprite, car.angle)
         car.draw(screen)
         pygame.display.flip()
-        clock.tick(5000)
-
-    return fitness,
+        clock.tick(3000)
 
 def run_simulation():
-    # Initialize PyGame and the map
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
     game_map = pygame.image.load('map.png').convert()
-    generation_font = pygame.font.SysFont("Arial", 30)
-    alive_font = pygame.font.SysFont("Arial", 20)
     clock = pygame.time.Clock()
-    running = True
-
-
 
     # Define DEAP framework
     creator.create("FitnessMax", base.Fitness, weights=(1.0,))
     creator.create("Individual", list, fitness=creator.FitnessMax)
 
     toolbox = base.Toolbox()
-    #toolbox.register("attr_float", random.uniform, -1, 1)
     toolbox.register("attr_int", random.randint, 0, 1)
-    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_int, n=200)
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_int, n=100)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-    toolbox.register("mate", tools.cxBlend, alpha=0.5)
-    toolbox.register("mutate", tools.mutGaussian, mu=0, sigma=1, indpb=0.2)
-    toolbox.register("select", tools.selTournament, tournsize=3)
-    toolbox.register("evaluate", eval_car, game_map=game_map, screen=screen, clock=clock)
+    toolbox.register("mate", tools.cxOnePoint)
+    toolbox.register("mutate", tools.mutFlipBit, indpb=0.2)
+    toolbox.register("select", tools.selTournament, tournsize=2)
 
-    population = toolbox.population(n=30)
+    population = toolbox.population(n=200)
 
-    screen.blit(game_map, (0, 0))
-    # Evolutionary algorithm
     for gen in range(1000):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
-        # Evaluate all individuals
-        fitnesses = list(map(toolbox.evaluate, population))
-        for ind, fit in zip(population, fitnesses):
-            ind.fitness.values = fit
 
-        # Select, mate, and mutate individuals
-        offspring = toolbox.select(population, len(population))
+        results = threaded_evaluation(population, game_map, screen, clock)
+        for ind, (fitness, _) in zip(population, results):
+            ind.fitness.values = (fitness,)
+
+        elites = tools.selBest(population, 2)
+        offspring = toolbox.select(population, len(population) - len(elites))
         offspring = list(map(toolbox.clone, offspring))
 
         for child1, child2 in zip(offspring[::2], offspring[1::2]):
-            if random.random() < 0.5:
+            if random.random() < 0.7:
                 toolbox.mate(child1, child2)
                 del child1.fitness.values
                 del child2.fitness.values
 
         for mutant in offspring:
-            if random.random() < 0.5:
+            if random.random() < 0.4:
                 toolbox.mutate(mutant)
                 del mutant.fitness.values
 
-        population[:] = offspring
+        population[:] = offspring + elites
 
+        print(f"Generation {gen}, best fitness: {best_fitness}")
+        draw_best_car(screen, game_map, clock)
 
-        print(f"Generation {gen}")
-        text = generation_font.render("Generation: " + str(gen), True, (0,0,0))
-        text_rect = text.get_rect()
-        text_rect.center = (900, 450)
-        screen.blit(text, text_rect)
-        pygame.display.flip()
-        clock.tick(5000)
-        #sleep(1)
+    # After all generations, draw the best car
+
 
 if __name__ == "__main__":
     run_simulation()
