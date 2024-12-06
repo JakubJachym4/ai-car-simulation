@@ -4,6 +4,7 @@ import queue
 from os import write
 from time import sleep
 import pygame
+import matplotlib.pyplot as plt
 import numpy as np
 import random
 from deap import base, creator, tools
@@ -15,6 +16,7 @@ CAR_SIZE_X = 60
 CAR_SIZE_Y = 60
 BORDER_COLOR = (255, 255, 255, 255)
 INSTRUCTION_COUNT = 40
+GENERATIONS = 50
 
 check_if_best_car_lock = threading.Lock()
 best_fitness = -float('inf')
@@ -221,9 +223,11 @@ def run_simulation():
     game_map = pygame.image.load('map.png').convert()
     clock = pygame.time.Clock()
 
-    # Define DEAP framework
-    creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-    creator.create("Individual", list, fitness=creator.FitnessMax)
+    # Check if 'FitnessMax' and 'Individual' have already been created
+    if not hasattr(creator, 'FitnessMax'):
+        creator.create("FitnessMax", base.Fitness, weights=(1.0,))
+    if not hasattr(creator, 'Individual'):
+        creator.create("Individual", list, fitness=creator.FitnessMax)
 
     toolbox = base.Toolbox()
 
@@ -239,7 +243,13 @@ def run_simulation():
     stagnation_count = 0
     best_fitness = None
 
-    for gen in range(400):
+    # Initialize lists for storing results
+    best_fitness_values = [0] * GENERATIONS
+    worst_fitness_values = [0] * GENERATIONS
+    average_fitness_values = [0] * GENERATIONS
+    std_fitness_values = [0] * GENERATIONS
+
+    for gen in range(GENERATIONS):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
@@ -248,7 +258,12 @@ def run_simulation():
         for ind, (fitness, _) in zip(population, results):
             ind.fitness.values = (fitness,)
 
-        current_best = max(ind.fitness.values[0] for ind in population)
+        fitness_values = [ind.fitness.values[0] for ind in population]
+
+        current_best = np.max(fitness_values)
+        current_worst = np.min(fitness_values)
+        current_average = np.mean(fitness_values)
+        current_std = np.std(fitness_values, mean=current_average)
 
         if best_fitness is None or current_best > best_fitness:
             best_fitness = current_best
@@ -275,11 +290,70 @@ def run_simulation():
 
         population[:] = offspring
 
+        # After all generations, draw the best car
         draw_best_car(screen, game_map, clock)
-        print(f"Generation {gen}, instructions: {best_car_counter}, best fitness: {best_fitness}")
+        print(f"Generation {gen}, instructions: {best_car_counter}, "
+              f"best fitness: {current_best}, worst: {current_worst}, average: {current_average}")
+        # Store the fitness values for the current generation
+        best_fitness_values[gen] = current_best
+        worst_fitness_values[gen] = current_worst
+        average_fitness_values[gen] = current_average
+        std_fitness_values[gen] = current_std
 
-    # After all generations, draw the best car
+    pygame.quit()
+    return {
+        'best_fitness_values': best_fitness_values,
+        'worst_fitness_values': worst_fitness_values,
+        'average_fitness_values': average_fitness_values,
+        'std_fitness_values': std_fitness_values
+    }
 
+def plot_results(best_fitness_values, worst_fitness_values, average_fitness_values, std_fitness_values):
+    indexes = list(range(1, GENERATIONS + 1))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(indexes, best_fitness_values, color='green', label='Best Fitness')
+    plt.plot(indexes, worst_fitness_values, color='red', label='Worst Fitness')
+    plt.plot(indexes, average_fitness_values, color='blue', label='Average Fitness')
+
+    # Adding standard deviation
+    plt.fill_between(indexes,
+                     np.array(average_fitness_values) - np.array(std_fitness_values),
+                     np.array(average_fitness_values) + np.array(std_fitness_values),
+                     color='blue', alpha=0.2)
+
+    # Adding labels and title
+    plt.xlabel('Generation')
+    plt.ylabel('Fitness Value')
+    plt.title('Fitness Values Over Generations')
+    plt.legend()
+
+    plt.grid(True)
+    # Show plot
+    plt.show()
+
+
+def average_results(results_list):
+    avg_best_fitness = np.mean([result['best_fitness_values'] for result in results_list], axis=0)
+    avg_worst_fitness = np.mean([result['worst_fitness_values'] for result in results_list], axis=0)
+    avg_average_fitness = np.mean([result['average_fitness_values'] for result in results_list], axis=0)
+    avg_std_fitness = np.mean([result['std_fitness_values'] for result in results_list], axis=0)
+
+    return {
+        'best_fitness_values': avg_best_fitness,
+        'worst_fitness_values': avg_worst_fitness,
+        'average_fitness_values': avg_average_fitness,
+        'std_fitness_values': avg_std_fitness
+    }
 
 if __name__ == "__main__":
-    run_simulation()
+    results_list = [run_simulation() for _ in range(10)]
+    avg_results = average_results(results_list)
+
+    print("Average Best Fitness Values:", avg_results['best_fitness_values'])
+    print("Average Worst Fitness Values:", avg_results['worst_fitness_values'])
+    print("Average Fitness Values:", avg_results['average_fitness_values'])
+    print("Average Std Fitness Values:", avg_results['std_fitness_values'])
+
+    plot_results(**avg_results)
+
